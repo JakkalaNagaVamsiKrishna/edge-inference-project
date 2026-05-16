@@ -1,0 +1,126 @@
+# docker/Dockerfile.inference
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-stage Dockerfile: cross-compiles the C++ inference server for ARM64
+# and produces a minimal runtime image.
+#
+# Stage 1 (builder):  x86_64 Ubuntu with ARM64 cross-compiler toolchain
+# Stage 2 (runtime):  Minimal ARM64 Ubuntu with only the binary + model
+#
+# Why multi-stage?
+#   The builder needs GCC, CMake, wget, etc. — hundreds of MB.
+#   The runtime image only needs the compiled binary + onnxruntime .so — ~40MB.
+#   Multi-stage drops build tools before the final image is committed.
+#
+# Build:
+#   docker buildx build \
+#     --platform linux/arm64 \
+#     --build-arg MODEL_PATH=/app/model/student_int8.onnx \
+#     -f docker/Dockerfile.inference \
+#     -t edge-cv-server:latest .
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Stage 1: Builder ──────────────────────────────────────────────────────────
+FROM ubuntu:22.04 AS builder
+
+ARG TARGETARCH
+ARG ORT_VERSION=1.18.0
+ARG MODEL_PATH=/app/model/student_int8.onnx
+ARG SERVER_PORT=8080
+ARG INPUT_H=224
+ARG INPUT_W=224
+ARG INPUT_C=3
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    ninja-build \
+    wget \
+    ca-certificates \
+    # ARM64 cross-compilation toolchain
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download the correct ONNX Runtime prebuilt for the target arch
+RUN case "$TARGETARCH" in \
+      arm64)  ORT_ARCH="aarch64" ;; \
+      amd64)  ORT_ARCH="x64"     ;; \
+      *)      echo "Unknown TARGETARCH: $TARGETARCH" && exit 1 ;; \
+    esac && \
+    wget -q --show-progress \
+      "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" \
+      -O /tmp/onnxruntime.tgz && \
+    tar -xzf /tmp/onnxruntime.tgz -C /opt && \
+    mv /opt/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION} /opt/onnxruntime && \
+    rm /tmp/onnxruntime.tgz
+
+# Download single-header dependencies
+RUN mkdir -p /build/inference/include && \
+    wget -q https://raw.githubusercontent.com/yhirose/cpp-httplib/master/httplib.h \
+         -O /build/inference/include/httplib.h && \
+    wget -q https://raw.githubusercontent.com/nlohmann/json/develop/single_include/nlohmann/json.hpp \
+         -O /build/inference/include/json.hpp
+
+# Copy source
+COPY inference/ /build/inference/
+
+# Cross-compile
+RUN case "$TARGETARCH" in \
+      arm64) \
+        cmake -S /build/inference -B /build/cmake-out -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_SYSTEM_NAME=Linux \
+          -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+          -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+          -DCMAKE_CXX_FLAGS="-march=armv8-a+simd -O3 -ffast-math" \
+          -DONNXRUNTIME_ROOT=/opt/onnxruntime \
+          -DMODEL_PATH="${MODEL_PATH}" \
+          -DSERVER_PORT=${SERVER_PORT} \
+          -DINPUT_H=${INPUT_H} -DINPUT_W=${INPUT_W} -DINPUT_C=${INPUT_C} \
+        ;; \
+      amd64) \
+        cmake -S /build/inference -B /build/cmake-out -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_FLAGS="-march=x86-64-v3 -O3 -ffast-math" \
+          -DONNXRUNTIME_ROOT=/opt/onnxruntime \
+          -DMODEL_PATH="${MODEL_PATH}" \
+          -DSERVER_PORT=${SERVER_PORT} \
+          -DINPUT_H=${INPUT_H} -DINPUT_W=${INPUT_W} -DINPUT_C=${INPUT_C} \
+        ;; \
+    esac && \
+    cmake --build /build/cmake-out --target edge_cv_server
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM ubuntu:22.04 AS runtime
+
+# Resource constraints (enforced by docker run --memory / --cpus)
+# Here for documentation — actual enforcement is at docker run time.
+# CI enforces: docker run --memory=512m --cpus=1.5
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \    
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy binary
+COPY --from=builder /build/cmake-out/edge_cv_server /app/bin/edge_cv_server
+
+# Copy ONNX Runtime shared library
+COPY --from=builder /opt/onnxruntime/lib/libonnxruntime.so* /app/lib/
+
+# Model is mounted at runtime (not baked in — keeps image small and swappable)
+VOLUME ["/app/model"]
+
+ENV LD_LIBRARY_PATH=/app/lib:$LD_LIBRARY_PATH
+ENV SERVER_PORT=8080
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s \
+  CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["/app/bin/edge_cv_server"]

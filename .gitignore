@@ -1,0 +1,22 @@
+# Project specific
+.venv/
+__pycache__/
+*.pyc
+outputs/
+data/
+build/
+notes/
+*.onnx
+*.pth
+*.log
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS related
+.DS_Store
+Thumbs.db
+.ipynb_checkpoints/

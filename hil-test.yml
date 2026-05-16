@@ -1,0 +1,245 @@
+# .github/workflows/hil-test.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Hardware-in-the-Loop (HIL) CI/CD Pipeline
+#
+# Triggered on every push to main or pull request.
+#
+# Pipeline stages:
+#   1. cross-compile    → build C++ ARM64 binary via Docker buildx
+#   2. compress-model   → prune + distill + quantize → INT8 ONNX
+#   3. deploy-to-qemu   → spin up ARM64 container with QEMU emulation
+#   4. benchmark-hil    → run latency + accuracy suite against container
+#   5. gate             → fail build if thresholds not met
+#   6. upload-artifacts → store ONNX model + benchmark JSON
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Hardware-in-the-Loop CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs on the same branch (saves CI minutes)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  ORT_VERSION: "1.18.0"
+  IMAGE_NAME: edge-cv-server
+
+jobs:
+  # ── Job 1: Cross-compile C++ binary ────────────────────────────────────────
+  cross-compile:
+    name: Cross-compile (ARM64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for ARM64 emulation in Docker)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ARM64 inference image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.inference
+          platforms: linux/arm64
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # Cache layers across runs — avoids re-downloading ORT every time
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/edge-cv-server.tar
+
+      - name: Upload image tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/edge-cv-server.tar
+          retention-days: 1
+
+  # ── Job 2: Compress model (Prune + Distill + Quantize) ─────────────────────
+  compress-model:
+    name: Compress Model (Python)
+    runs-on: ubuntu-latest
+    # Run in parallel with cross-compile — both take ~10 min
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache dataset
+        uses: actions/cache@v4
+        with:
+          path: ./data
+          key: dataset-${{ hashFiles('configs/config.yaml') }}
+
+      - name: Run compression pipeline
+        run: python -m compressor.pipeline
+        env:
+          EDGE_CV_CONFIG: configs/config.yaml
+
+      - name: Verify ONNX output exists
+        run: |
+          ls -lh outputs/student_int8.onnx
+          python -c "
+          import onnx
+          m = onnx.load('outputs/student_int8.onnx')
+          onnx.checker.check_model(m)
+          print('ONNX model is valid')
+          "
+
+      - name: Upload ONNX model
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnx-model
+          path: outputs/student_int8.onnx
+          retention-days: 7
+
+      - name: Upload compression summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: compression-summary
+          path: outputs/compression_summary.json
+
+  # ── Job 3 + 4: Deploy to QEMU and benchmark ────────────────────────────────
+  benchmark-hil:
+    name: HIL Benchmark (ARM64 QEMU)
+    runs-on: ubuntu-latest
+    needs: [cross-compile, compress-model]
+    # Hard timeout — if the server hangs, don't wait forever
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Download ONNX model
+        uses: actions/download-artifact@v4
+        with:
+          name: onnx-model
+          path: outputs/
+
+      - name: Load Docker image
+        run: docker load < /tmp/edge-cv-server.tar
+
+      - name: Start ARM64 inference container
+        run: |
+          docker run -d \
+            --name edge-cv \
+            --platform linux/arm64 \
+            --memory=512m \
+            --cpus=1.5 \
+            -p 8080:8080 \
+            -v $(pwd)/outputs:/app/model:ro \
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Set up Python (for benchmark runner)
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install benchmark dependencies
+        run: pip install requests numpy torchvision pillow pyyaml
+
+      - name: Run HIL benchmark suite
+        run: python -m benchmark.runner --host localhost --port 8080 --n 100
+        env:
+          EDGE_CV_CONFIG: configs/config.yaml
+
+      - name: Run hardware gate check
+        run: python -m benchmark.gate
+        env:
+          EDGE_CV_CONFIG: configs/config.yaml
+
+      - name: Print container logs (always, for debugging)
+        if: always()
+        run: docker logs edge-cv
+
+      - name: Stop container
+        if: always()
+        run: docker stop edge-cv && docker rm edge-cv
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: outputs/benchmark.json
+          retention-days: 30
+
+  # ── Job 5: Post results to PR comment ─────────────────────────────────────
+  report:
+    name: Post Results
+    runs-on: ubuntu-latest
+    needs: benchmark-hil
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Download benchmark report
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-report
+
+      - name: Post benchmark summary to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs   = require('fs');
+            const data = JSON.parse(fs.readFileSync('benchmark.json', 'utf8'));
+            const lat  = data.latency;
+            const acc  = data.accuracy;
+            const icon = data.passed ? '✅' : '❌';
+
+            const body = [
+              `## ${icon} Hardware-in-the-Loop Benchmark Results`,
+              '',
+              '| Metric | Value | Gate |',
+              '|--------|-------|------|',
+              `| p95 Latency | ${lat.p95_ms.toFixed(1)} ms | ≤ ${data.gates.latency_gate_ms} ms |`,
+              `| Mean Latency | ${lat.mean_ms.toFixed(1)} ms | — |`,
+              `| FPS | ${lat.fps.toFixed(1)} | — |`,
+              `| Top-1 Accuracy | ${(acc.accuracy * 100).toFixed(2)}% | ≥ ${(data.gates.accuracy_threshold * 100).toFixed(0)}% |`,
+              `| Memory RSS | ${lat.memory_rss_mb.toFixed(1)} MB | ≤ ${data.gates.memory_limit_mb} MB |`,
+              '',
+              data.passed ? '_All gates passed._' :
+                '**Failures:**\n' + data.failures.map(f => `- ${f}`).join('\n'),
+            ].join('\n');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });

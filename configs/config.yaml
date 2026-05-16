@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Edge-CV-Hub  ·  Master Configuration
+# Change ONLY this file to retarget the project for any use-case.
+# ─────────────────────────────────────────────────────────────────────────────
+
+model:
+  # Task: classification | detection | segmentation
+  task: classification
+
+  # Teacher: large accurate model trained in PyTorch
+  teacher_arch: resnet50
+  teacher_weights: pretrained          # "pretrained" → torchvision weights
+                                       # or path to a .pth checkpoint
+
+  # Student: tiny architecture to train via distillation
+  student_arch: mobilenet_v3_small     # mobilenet_v3_small | efficientnet_b0
+
+  # Dataset (torchvision dataset name, or path to custom ImageFolder)
+  dataset: cifar10
+  num_classes: 10
+  data_dir: ./data
+
+  # Training knobs (for the distillation fine-tune pass)
+  epochs: 15
+  batch_size: 128
+  learning_rate: 0.001
+
+compression:
+  # Structured channel pruning ratio (0.0 = no pruning, 0.5 = remove 50% channels)
+  pruning_ratio: 0.35
+
+  # Quantization mode: int8_ptq | fp16 | none
+  quantization_mode: int8_ptq
+
+  # Number of calibration images for PTQ
+  calibration_samples: 512
+
+  # Knowledge distillation temperature (higher = softer targets, more info)
+  distillation_temperature: 6.0
+
+  # Weight of distillation loss vs hard-label loss (0.0–1.0)
+  distillation_alpha: 0.7
+
+deployment:
+  # Target architecture: arm64 | x86_64 | jetson
+  target_arch: arm64
+
+  # Hardware gate thresholds (CI fails if exceeded/missed)
+  latency_gate_ms: 50
+  accuracy_threshold: 0.80         # minimum acceptable Top-1 accuracy
+  memory_limit_mb: 512
+
+  # REST server port inside the container
+  server_port: 8080
+
+  # Input image dimensions expected by the student model
+  input_height: 224
+  input_width: 224
+  input_channels: 3
+
+logging:
+  level: INFO
+  output_dir: ./outputs
+  benchmark_json: ./outputs/benchmark.json
+  dashboard_port: 5000
