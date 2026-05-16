@@ -79,7 +79,9 @@ def _collect_conv_layers(model: nn.Module) -> list[tuple[str, nn.Conv2d]]:
     ]
 
 
-def _count_parameters(model: nn.Module) -> int:
+def _count_parameters(model: nn.Module, nonzero_only: bool = False) -> int:
+    if nonzero_only:
+        return sum((p != 0).sum().item() for p in model.parameters())
     return sum(p.numel() for p in model.parameters())
 
 
@@ -136,10 +138,10 @@ def prune_teacher(save_path: Path | None = None) -> nn.Module:
     for name, module in conv_layers:
         prune.remove(module, "weight")
 
-    params_after = _count_parameters(model)
+    params_after = _count_parameters(model, nonzero_only=True)
     sparsity = 1.0 - (params_after / params_before)
     logger.info(
-        "Parameters after pruning: %d  |  Effective sparsity: %.1f%%",
+        "Parameters after pruning (non-zero): %d  |  Effective sparsity: %.1f%%",
         params_after,
         sparsity * 100,
     )

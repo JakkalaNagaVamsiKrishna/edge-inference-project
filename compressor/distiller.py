@@ -114,20 +114,22 @@ def _build_dataloaders() -> tuple[DataLoader, DataLoader]:
         train_ds = torchvision.datasets.ImageFolder(f"{data_dir}/train", transform=train_tf)
         val_ds   = torchvision.datasets.ImageFolder(f"{data_dir}/val",   transform=val_tf)
 
+    import os
+    num_workers = min(os.cpu_count() or 1, 4)
     pin_memory = torch.cuda.is_available()
 
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.model.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=pin_memory,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=cfg.model.batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=pin_memory,
     )
     return train_loader, val_loader

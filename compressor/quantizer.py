@@ -63,9 +63,11 @@ def _build_calibration_loader() -> DataLoader:
     else:
         full = torchvision.datasets.ImageFolder(f"{data_dir}/train", transform=tf)
 
+    import os
+    num_workers = min(os.cpu_count() or 1, 4)
     indices = list(range(min(n, len(full))))
     subset = Subset(full, indices)
-    return DataLoader(subset, batch_size=32, shuffle=False, num_workers=2)
+    return DataLoader(subset, batch_size=32, shuffle=False, num_workers=num_workers)
 
 
 # ─── Export to ONNX (FP32 first) ──────────────────────────────────────────────
@@ -191,7 +193,9 @@ def verify_accuracy(int8_onnx_path: Path) -> float:
     else:
         val_ds = torchvision.datasets.ImageFolder(f"{data_dir}/val", transform=tf)
 
-    loader = DataLoader(val_ds, batch_size=64, shuffle=False, num_workers=2)
+    import os
+    num_workers = min(os.cpu_count() or 1, 4)
+    loader = DataLoader(val_ds, batch_size=64, shuffle=False, num_workers=num_workers)
 
     sess_opts = ort.SessionOptions()
     sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
