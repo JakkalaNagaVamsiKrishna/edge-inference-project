@@ -16,7 +16,6 @@ import argparse
 import json
 import logging
 import time
-from pathlib import Path
 
 from configs.settings import cfg
 

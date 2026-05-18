@@ -22,7 +22,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms as T
 import torchvision.models as tvm
@@ -193,7 +193,7 @@ def distill(save_path: Path | None = None) -> nn.Module:
         # Actually load the teacher arch properly
         import torchvision.models as tvm2
         teacher = tvm2.get_model(cfg.model.teacher_arch, num_classes=cfg.model.num_classes)
-        teacher.load_state_dict(torch.load(pruned_path, map_location="cpu"))
+        teacher.load_state_dict(torch.load(pruned_path, map_location="cpu", weights_only=True))
     else:
         logger.warning("No pruned teacher found — running pruning first.")
         teacher = prune_teacher()
@@ -250,31 +250,34 @@ def distill(save_path: Path | None = None) -> nn.Module:
                 epoch_losses[k] += breakdown[k]
             batches += 1
 
-        scheduler.step()
+        if batches > 0:
+            scheduler.step()
 
-        # Average losses
-        for k in epoch_losses:
-            epoch_losses[k] /= batches
+            # Average losses
+            for k in epoch_losses:
+                epoch_losses[k] /= batches
 
-        val_acc = _evaluate(student, val_loader, device)
-        loss_history.append({"epoch": epoch, "val_acc": val_acc, **epoch_losses})
+            val_acc = _evaluate(student, val_loader, device)
+            loss_history.append({"epoch": epoch, "val_acc": val_acc, **epoch_losses})
 
-        logger.info(
-            "Epoch %02d/%02d  |  total=%.4f  distill=%.4f  task=%.4f  |  val_acc=%.3f",
-            epoch, cfg.model.epochs,
-            epoch_losses["total_loss"], epoch_losses["distill_loss"],
-            epoch_losses["task_loss"], val_acc,
-        )
+            logger.info(
+                "Epoch %02d/%02d  |  total=%.4f  distill=%.4f  task=%.4f  |  val_acc=%.3f",
+                epoch, cfg.model.epochs,
+                epoch_losses["total_loss"], epoch_losses["distill_loss"],
+                epoch_losses["task_loss"], val_acc,
+            )
 
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save(student.state_dict(), save_path)
-            logger.info("  ✓ New best (%.3f) — checkpoint saved → %s", best_acc, save_path)
+            if val_acc > best_acc:
+                best_acc = val_acc
+                torch.save(student.state_dict(), save_path)
+                logger.info("  ✓ New best (%.3f) — checkpoint saved → %s", best_acc, save_path)
+        else:
+            logger.warning("Epoch %d: No batches processed. Check your dataset!", epoch)
 
     logger.info("Distillation complete. Best val accuracy: %.3f", best_acc)
 
     # Load best weights
-    student.load_state_dict(torch.load(save_path, map_location="cpu"))
+    student.load_state_dict(torch.load(save_path, map_location="cpu", weights_only=True))
     student.eval()
     return student
 

@@ -6,7 +6,7 @@ Every Python module imports from here — never reads YAML directly.
 
 from __future__ import annotations
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import yaml
 
@@ -98,13 +98,37 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     with open(config_path, "r") as f:
         raw = yaml.safe_load(f)
 
-    return Settings(
-        model=ModelConfig(**raw["model"]),
-        compression=CompressionConfig(**raw["compression"]),
-        deployment=DeploymentConfig(**raw["deployment"]),
-        logging=LoggingConfig(**raw["logging"]),
-    )
+    if not isinstance(raw, dict):
+        raise ValueError(f"Malformed config at {config_path}: expected dictionary.")
+
+    try:
+        return Settings(
+            model=ModelConfig(**raw["model"]),
+            compression=CompressionConfig(**raw["compression"]),
+            deployment=DeploymentConfig(**raw["deployment"]),
+            logging=LoggingConfig(**raw["logging"]),
+        )
+    except KeyError as e:
+        raise KeyError(f"Missing required config section: {e}") from e
+    except TypeError as e:
+        raise TypeError(f"Invalid or missing fields in config: {e}") from e
 
 
 # Module-level singleton — import this instead of calling load_settings()
-cfg: Settings = load_settings()
+_cfg: Settings | None = None
+
+
+def get_cfg() -> Settings:
+    global _cfg
+    if _cfg is None:
+        _cfg = load_settings()
+    return _cfg
+
+
+# For backward compatibility with existing imports
+class _CfgProxy:
+    def __getattr__(self, name):
+        return getattr(get_cfg(), name)
+
+
+cfg: Settings = _CfgProxy()  # type: ignore

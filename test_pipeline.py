@@ -21,7 +21,6 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
 import torch
 import torch.nn as nn
 
@@ -50,24 +49,28 @@ def test_teacher_loads():
 def test_structured_pruning_reduces_params():
     """After pruning, zeroed weights should reduce effective parameter count."""
     import torch.nn.utils.prune as prune
-    import torchvision.models as tvm
 
-    model = tvm.mobilenet_v3_small(weights=None, num_classes=10)
+    model = nn.Sequential(
+        nn.Conv2d(3, 100, 3),
+        nn.Conv2d(100, 100, 3),
+        nn.Linear(100, 10)
+    )
 
     total_before = sum(p.numel() for p in model.parameters())
 
     # Apply pruning
     for name, module in model.named_modules():
-        if isinstance(module, nn.Conv2d):
-            prune.ln_structured(module, name="weight", amount=0.3, n=1, dim=0)
+        if isinstance(module, nn.Module) and hasattr(module, "weight") and isinstance(module, nn.Conv2d):
+            prune.ln_structured(module, name="weight", amount=0.4, n=1, dim=0)
+            prune.remove(module, "weight")
 
     # Count non-zero parameters
     nonzero = sum(
         (p != 0).sum().item() for p in model.parameters()
     )
 
-    # After 30% pruning, at least 20% fewer non-zero weights
-    assert nonzero < total_before * 0.95
+    # After 40% pruning of large conv layers, should be less than 90%
+    assert nonzero < total_before * 0.90
 
 
 # ─── Distillation loss ────────────────────────────────────────────────────────

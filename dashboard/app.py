@@ -16,7 +16,6 @@ Usage:
 
 from __future__ import annotations
 import json
-import os
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string
@@ -33,7 +32,10 @@ def load_benchmark() -> dict:
     if not p.exists():
         return {}
     with open(p) as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Malformed benchmark report: {e}")
 
 
 # ─── HTML template (self-contained, no external CDN) ─────────────────────────
@@ -308,7 +310,11 @@ def index():
 
 @app.route("/api/benchmark")
 def api_benchmark():
-    return jsonify(load_benchmark())
+    try:
+        data = load_benchmark()
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/config")

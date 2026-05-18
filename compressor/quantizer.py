@@ -67,17 +67,35 @@ def export_onnx_fp32(model: torch.nn.Module, save_path: Path, input_shape: tuple
     dummy = torch.zeros(*input_shape)
     model.eval()
 
-    torch.onnx.export(
-        model,
-        dummy,
-        str(save_path),
-        export_params=True,
-        opset_version=18,
-        do_constant_folding=True,
-        input_names=["input"],
-        output_names=["output"],
-        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-    )
+    # Positional-only dynamic shape matching to avoid arg name conflicts ('x' vs 'input')
+    dynamic_shapes = ({0: torch.export.Dim("batch_size", min=1, max=1024)},)
+    
+    try:
+        # We try the modern approach first if supported by the environment's ORT version
+        torch.onnx.export(
+            model,
+            dummy,
+            str(save_path),
+            export_params=True,
+            opset_version=18,
+            do_constant_folding=True,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_shapes=dynamic_shapes,
+        )
+    except (TypeError, AttributeError, ImportError):
+        # Fallback for older PyTorch versions or environments where dynamic_shapes is not yet standard
+        torch.onnx.export(
+            model,
+            dummy,
+            str(save_path),
+            export_params=True,
+            opset_version=18,
+            do_constant_folding=True,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        )
     size_mb = save_path.stat().st_size / 1e6
     logger.info("ONNX FP32 exported → %s  (%.1f MB)", save_path, size_mb)
     return save_path
@@ -104,8 +122,9 @@ def quantize_to_int8(fp32_onnx_path: Path, save_path: Path) -> Path:
         from onnxruntime.quantization.shape_inference import quant_pre_process
     except ImportError:
         logger.error(
-            "onnxruntime-tools not installed. Run:\n"
-            "  pip install onnxruntime onnxruntime-tools"
+            "onnxruntime quantization module not found.\n"
+            "  Ensure onnxruntime >= 1.16.0 is installed:\n"
+            "  pip install 'onnxruntime>=1.16.0'"
         )
         raise
 
@@ -126,22 +145,27 @@ def quantize_to_int8(fp32_onnx_path: Path, save_path: Path) -> Path:
                 return None
 
     # ── Pre-process ────────────────────────────────────────────────────────────
-    logger.info("Pre-processing FP32 ONNX model...")
     preprocessed_path = str(fp32_onnx_path).replace(".onnx", "_infer.onnx")
-    # Set skip_symbolic_shape=True to avoid 'Incomplete symbolic shape inference' errors
-    quant_pre_process(str(fp32_onnx_path), preprocessed_path, skip_symbolic_shape=True)
+    try:
+        logger.info("Pre-processing FP32 ONNX model...")
+        # Run shape inference without skipping symbolic shapes for better optimization
+        quant_pre_process(str(fp32_onnx_path), preprocessed_path)
 
-    # ── Quantize ───────────────────────────────────────────────────────────────
-    logger.info("Running PTQ calibration on %d samples…", cfg.compression.calibration_samples)
-    quantize_static(
-        model_input=preprocessed_path,
-        model_output=str(save_path),
-        calibration_data_reader=_DataReader(),
-        quant_format=QuantFormat.QDQ,
-        per_channel=True,
-        weight_type=QuantType.QInt8,
-        activation_type=QuantType.QInt8,
-    )
+        # ── Quantize ───────────────────────────────────────────────────────────────
+        logger.info("Running PTQ calibration on %d samples…", cfg.compression.calibration_samples)
+        quantize_static(
+            model_input=preprocessed_path,
+            model_output=str(save_path),
+            calibration_data_reader=_DataReader(),
+            quant_format=QuantFormat.QDQ,
+            per_channel=True,
+            weight_type=QuantType.QInt8,
+            activation_type=QuantType.QInt8,
+        )
+    finally:
+        if Path(preprocessed_path).exists():
+            Path(preprocessed_path).unlink()
+            logger.debug("Cleaned up intermediate file: %s", preprocessed_path)
 
     before_mb = fp32_onnx_path.stat().st_size / 1e6
     after_mb  = save_path.stat().st_size / 1e6

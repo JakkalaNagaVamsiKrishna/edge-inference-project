@@ -116,6 +116,7 @@ struct MappedModel {
     MappedModel(const MappedModel&) = delete;
     MappedModel& operator=(const MappedModel&) = delete;
     MappedModel(MappedModel&&) = default;
+    MappedModel& operator=(MappedModel&&) = default;
     MappedModel() = default;
 };
 
@@ -173,10 +174,6 @@ public:
         opts.SetGraphOptimizationLevel(
             GraphOptimizationLevel::ORT_ENABLE_ALL // fuses ops, removes dead nodes
         );
-
-        // Enable XNNPACK on ARM for hardware-accelerated INT8 kernels
-        // XNNPACK provides optimized NEON SIMD kernels on ARM processors
-        OrtSessionOptionsAppendExecutionProvider_XNNPACK(opts, {});
 
         // Load from memory (the mmap buffer) — no extra copy
         session_ = Ort::Session(env_, model_data, model_size, opts);

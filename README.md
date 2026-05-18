@@ -20,6 +20,15 @@ In the transition from research to production, Computer Vision models often face
 
 ---
 
+## 🛠️ Technical Requirements
+
+*   **Python:** 3.10 or 3.11 (Python 3.12+ is supported but 3.11 is recommended for full ORT feature parity).
+*   **ONNX Runtime:** **v1.16.0 or higher** is strictly required for the static quantization API.
+*   **ONNX Opset:** The pipeline uses **Opset 18** by default for MobileNetV3/EfficientNet compatibility.
+*   **C++:** C++17 compliant compiler (GCC 9+ or Clang 12+).
+
+---
+
 ## 🛠 Integrated Pipeline Architecture
 
 The following diagram illustrates the end-to-end transformation of a high-fidelity model into an edge-ready artifact:

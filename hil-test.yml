@@ -92,7 +92,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ./data
-          key: dataset-${{ hashFiles('configs/config.yaml') }}
+          key: dataset-cifar10-v1
 
       - name: Run compression pipeline
         run: python -m compressor.pipeline

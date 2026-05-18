@@ -9,7 +9,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # -march=native    : Use all CPU features of the BUILD host
 # -ffast-math      : Relax IEEE754 strictness for speed (safe for inference)
 # For ARM cross-compilation the Dockerfile overrides -march to armv8-a+simd
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -ffast-math")
+if(NOT CMAKE_CROSSCOMPILING)
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -ffast-math -march=native")
+else()
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -ffast-math")
+endif()
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)

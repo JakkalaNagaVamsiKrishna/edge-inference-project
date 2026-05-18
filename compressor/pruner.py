@@ -63,7 +63,7 @@ def _load_teacher() -> nn.Module:
     else:
         # Custom checkpoint path
         model = tvm.get_model(arch, num_classes=num_classes)
-        state = torch.load(weights_cfg, map_location="cpu")
+        state = torch.load(weights_cfg, map_location="cpu", weights_only=True)
         model.load_state_dict(state)
 
     model.eval()
